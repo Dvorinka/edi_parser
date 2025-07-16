@@ -45,14 +45,14 @@ class EDIUnifiedParser:
             # Detect file type based on both filename and content
             file_type = self.detect_file_type(filepath, content)
             
-            # Function to run parser and close main window
             def run_parser(parser_func):
-                success = parser_func(filepath)
-                if success:
-                    if file_type != "trwkob":
-                        self.root.destroy()  # Close main window only for non-Trwkob parsers
-                return success
+                try:
+                    return parser_func(filepath)
+                except Exception as e:
+                    messagebox.showerror("Chyba", f"Chyba při spouštění parseru: {str(e)}")
+                    return False
             
+            success = False
             if file_type == "cummins":
                 success = run_parser(self.run_cummins_parser)
             elif file_type == "trwkob":
@@ -62,9 +62,10 @@ class EDIUnifiedParser:
             else:
                 messagebox.showerror("Chyba", "Nepodporovaný typ souboru")
                 
+            return success
+                
         except Exception as e:
             messagebox.showerror("Chyba", f"Chyba při načítání souboru: {str(e)}")
-            # Keep the main window open on error
             return False
 
     def detect_file_type(self, filepath, content):
@@ -107,42 +108,74 @@ class EDIUnifiedParser:
         return None
 
     def run_cummins_parser(self, filepath):
-        # Create parser instance but don't start mainloop yet
-        parser = EDIDelforCumminsParser(filepath)
-        parser.main_window = self.main_window
-        success = parser.load_file(filepath)
-        if success:
-            # Close main window
-            self.root.destroy()
-            # Start parser's mainloop
-            parser.root.mainloop()
-        return success
+        try:
+            # Create parser instance with Tk() root window
+            parser = EDIDelforCumminsParser()
+            
+            # Load the file
+            success = parser.load_file(filepath)
+            
+            if success:
+                # Start the parser's main loop
+                parser.root.mainloop()
+                return True
+            return False
+                
+        except Exception as e:
+            messagebox.showerror("Chyba", f"Chyba při načítání souboru: {str(e)}")
+            return False
+
+    def on_parser_close(self, parser):
+        """Handle parser window closing"""
+        try:
+            # First show the main window if it exists
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                self.root.deiconify()
+            
+            # Then safely destroy the parser window if it exists
+            if parser and hasattr(parser, 'root') and parser.root and parser.root.winfo_exists():
+                # Schedule the destroy to happen after this method completes
+                parser.root.after(100, parser.root.destroy)
+        except Exception as e:
+            # If anything goes wrong, just try to show the main window
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                self.root.deiconify()
 
     def run_trwkob_parser(self, filepath):
-        # Create parser instance but don't start mainloop yet
-        parser = EDITrwkobParser(filepath)
-        parser.main_window = self.main_window
         try:
+            # Create parser instance - don't set main_window to avoid circular references
+            parser = EDITrwkobParser()
+            
+            # Load the file
             success = parser.load_file(filepath)
+            
             if success:
-                # Start parser's mainloop without closing main window
+                # Start the parser's main loop
                 parser.root.mainloop()
-            return success
+                return True
+            return False
+                
         except Exception as e:
             messagebox.showerror("Chyba", f"Chyba při načítání souboru: {str(e)}")
             return False
 
     def run_minebea_parser(self, filepath):
-        # Create parser instance but don't start mainloop yet
-        parser = EDIDelforMinebeaParser(filepath)
-        parser.main_window = self.main_window
-        success = parser.load_file(filepath)
-        if success:
-            # Close main window
-            self.root.destroy()
-            # Start parser's mainloop
-            parser.root.mainloop()
-        return success
+        try:
+            # Create parser instance with Tk() root window
+            parser = EDIDelforMinebeaParser()
+            
+            # Load the file
+            success = parser.load_file(filepath)
+            
+            if success:
+                # Start the parser's main loop
+                parser.root.mainloop()
+                return True
+            return False
+                
+        except Exception as e:
+            messagebox.showerror("Chyba", f"Chyba při načítání souboru: {str(e)}")
+            return False
 
 def main():
     app = EDIUnifiedParser()

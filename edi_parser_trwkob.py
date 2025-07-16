@@ -1,7 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from datetime import datetime
+from datetime import datetime, date
 import os
+import openpyxl
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 class EDITrwkobParser:
     def __init__(self, filepath=None):
@@ -19,7 +22,7 @@ class EDITrwkobParser:
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Button(btn_frame, text="Načíst EDI soubor", command=self.load_file).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Export do Excelu", command=self.export_to_excel).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Zpět na hlavní okno", command=self.back_to_main).pack(side=tk.LEFT, padx=(10, 0))
         self.notebook = ttk.Notebook(main_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True)
@@ -45,7 +48,7 @@ class EDITrwkobParser:
     def setup_delivery_tab(self):
         tree_frame = ttk.Frame(self.delivery_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        columns = ('Datum od', 'Datum do', 'Množství', 'Jednotka', 'Typ', 'SCC')
+        columns = ('Datum od', 'Datum do', 'Množství', 'Typ', 'SCC')
         self.delivery_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
         for col in columns:
             self.delivery_tree.heading(col, text=col)
@@ -87,6 +90,18 @@ class EDITrwkobParser:
             return datetime_str
         except:
             return datetime_str
+
+    def load_file(self, filepath):
+        """Load and parse the specified EDI file"""
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            self.parse_edi_file(content)
+            self.display_data()
+            return True
+        except Exception as e:
+            messagebox.showerror("Chyba", f"Nelze načíst soubor: {str(e)}")
+            return False
 
     def parse_edi_file(self, content):
         lines = content.strip().split("'")
@@ -185,19 +200,6 @@ class EDITrwkobParser:
                         self.delivery_schedules.append(current_delivery.copy())
                         current_delivery = {'SCC': parts[1]}
 
-    def load_file(self, filepath=None):
-        if filepath:
-            try:
-                # Read file with proper encoding and error handling
-                with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
-                self.parse_edi_file(content)
-                self.display_data()
-                return True  # File loaded successfully
-            except Exception as e:
-                messagebox.showerror("Chyba", f"Nelze načíst soubor: {str(e)}")
-                return False  # File loading failed
-
     def display_data(self):
         self.info_text.delete(1.0, tk.END)
         info_content = "=== HLAVIČKA DOKUMENTU ===\n"
@@ -213,13 +215,14 @@ class EDITrwkobParser:
         for item in self.delivery_tree.get_children():
             self.delivery_tree.delete(item)
         for delivery in self.delivery_schedules:
+            scc_code = delivery.get('SCC', '')
+            scc_desc = self.get_scc_description(scc_code)
             self.delivery_tree.insert('', tk.END, values=(
                 delivery.get('Datum od', ''),
                 delivery.get('Datum do', ''),
                 delivery.get('Množství', ''),
-                delivery.get('Jednotka', ''),
                 delivery.get('Typ', ''),
-                delivery.get('SCC', '')
+                scc_desc
             ))
         self.stats_text.delete(1.0, tk.END)
         stats_content = "=== STATISTIKY ===\n"
@@ -238,6 +241,86 @@ class EDITrwkobParser:
         for delivery_type, stats in type_stats.items():
             stats_content += f"{delivery_type}: {stats['počet']} dodávek, {stats['množství']:,} kusů\n"
         self.stats_text.insert(1.0, stats_content)
+
+    def get_week_number(self, date_str):
+        """Convert date string to ISO week number (WW)"""
+        try:
+            day, month, year = map(int, date_str.split('.'))
+            dt = date(year, month, day)
+            return dt.isocalendar()[1]
+        except (ValueError, AttributeError):
+            return ""
+            
+    def get_scc_description(self, scc_code):
+        """Convert SCC code to descriptive name"""
+        scc_mapping = {
+            '10': 'Backlog',
+            '1': 'FIX',
+            '4': 'Forecast',
+            '': 'Neznámé',
+        }
+        return scc_mapping.get(scc_code, f'Neznámý kód: {scc_code}')
+
+    def export_to_excel(self):
+        """Export delivery data to Excel with calendar weeks"""
+        if not self.delivery_schedules:
+            messagebox.showwarning("Upozornění", "Žádná data k exportu")
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Dodávky"
+
+            # Headers
+            headers = ["Týden", "Datum", "Množství", "Typ", "SCC"]
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_num, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+
+            # Data
+            row_num = 2
+            for delivery in self.delivery_schedules:
+                date_str = delivery.get('Datum od', '')
+                week_num = self.get_week_number(date_str) if date_str else ""
+                scc_code = delivery.get('SCC', '')
+                scc_desc = self.get_scc_description(scc_code)
+                
+                ws.cell(row=row_num, column=1, value=week_num)
+                ws.cell(row=row_num, column=2, value=date_str)
+                ws.cell(row=row_num, column=3, value=delivery.get('Množství', ''))
+                ws.cell(row=row_num, column=4, value=delivery.get('Typ', ''))
+                ws.cell(row=row_num, column=5, value=scc_desc)
+                row_num += 1
+
+            # Auto-adjust column widths
+            for column in ws.columns:
+                max_length = 0
+                column_letter = get_column_letter(column[0].column)
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                ws.column_dimensions[column_letter].width = min(adjusted_width, 30)
+
+            # Save the file
+            filename = f"dodavky_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=filename
+            )
+            
+            if filepath:
+                wb.save(filepath)
+                messagebox.showinfo("Hotovo", f"Data byla úspěšně exportována do souboru:\n{filepath}")
+
+        except Exception as e:
+            messagebox.showerror("Chyba", f"Chyba při exportu do Excelu: {str(e)}")
 
     def back_to_main(self):
         """Closes the current window and returns to the main application"""

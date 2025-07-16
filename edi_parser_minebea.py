@@ -1,8 +1,11 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import re
-from datetime import datetime
+from datetime import datetime, date
 import os
+import openpyxl
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 class EDIDelforParser:
     def __init__(self, filepath=None):
@@ -14,7 +17,9 @@ class EDIDelforParser:
         self.header_info = {}
         self.partner_info = {}
         self.delivery_schedules = []
-        self.main_window = None
+        
+        # Handle window close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.setup_ui()
         
@@ -27,10 +32,10 @@ class EDIDelforParser:
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Tlačítko pro načtení souboru
+        # Tlačítka pro ovládání
         btn_frame = ttk.Frame(main_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Button(btn_frame, text="Načíst EDI soubor", command=self.load_file).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="Export do Excelu", command=self.export_to_excel).pack(side=tk.LEFT)
         ttk.Button(btn_frame, text="Zpět na hlavní okno", command=self.back_to_main).pack(side=tk.LEFT, padx=(10, 0))
         
         # Notebook pro záložky
@@ -65,12 +70,22 @@ class EDIDelforParser:
         self.info_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
+    def get_scc_description(self, scc_code):
+        """Convert SCC code to descriptive name"""
+        scc_mapping = {
+            '10': 'Backlog',
+            '1': 'FIX',
+            '4': 'Forecast',
+            '': 'Neznámé',
+        }
+        return scc_mapping.get(scc_code, f'Neznámý kód: {scc_code}')
+        
     def setup_delivery_tab(self):
         # Treeview pro plán dodávek
         tree_frame = ttk.Frame(self.delivery_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        columns = ('Datum od', 'Datum do', 'Množství', 'Jednotka', 'Typ', 'SCC')
+        columns = ('Datum od', 'Datum do', 'Množství', 'Typ', 'SCC')
         self.delivery_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
         
         # Definice sloupců
@@ -259,31 +274,52 @@ class EDIDelforParser:
                         self.delivery_schedules.append(current_delivery.copy())
                         current_delivery = {'SCC': parts[1]}  # Zachováme SCC pro další dodávky
     
-    def load_file(self, filepath=None):
+    def load_file(self, filepath):
         """Načte EDI soubor"""
-        if filepath:
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                self.parse_edi_file(content)
-                self.display_data()
+        try:
+            # Check if the window still exists
+            if not hasattr(self, 'root') or not self.root.winfo_exists():
+                return False
                 
-            except Exception as e:
+            with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+                
+            self.parse_edi_file(content)
+            
+            # Check again before updating UI
+            if hasattr(self, 'root') and self.root.winfo_exists():
+                self.display_data()
+                return True
+            return False
+            
+        except Exception as e:
+            # Safely show error if window still exists
+            if hasattr(self, 'root') and self.root.winfo_exists():
                 messagebox.showerror("Chyba", f"Nelze načíst soubor: {str(e)}")
+            return False
     
     def display_data(self):
         """Zobrazí naparsovaná data"""
-        # Základní informace
-        self.info_text.delete(1.0, tk.END)
-        info_content = "=== HLAVIČKA DOKUMENTU ===\n"
-        for key, value in self.header_info.items():
-            # Přeskočíme pomocný klíč
-            if key != 'Příjemce_kód':
-                info_content += f"{key}: {value}\n"
-        
-        # Pokud nemáme název příjemce, zobrazíme alespoň kód
-        if 'Příjemce' not in self.header_info and 'Příjemce_kód' in self.header_info:
-            info_content += f"Příjemce: {self.header_info['Příjemce_kód']}\n"
+        # Check if window still exists
+        if not hasattr(self, 'info_text') or not hasattr(self, 'root') or not self.root.winfo_exists():
+            return
+            
+        try:
+            # Základní informace
+            self.info_text.delete(1.0, tk.END)
+            info_content = "=== HLAVIČKA DOKUMENTU ===\n"
+            for key, value in self.header_info.items():
+                # Přeskočíme pomocný klíč
+                if key != 'Příjemce_kód':
+                    info_content += f"{key}: {value}\n"
+            
+            # Pokud nemáme název příjemce, zobrazíme alespoň kód
+            if 'Příjemce' not in self.header_info and 'Příjemce_kód' in self.header_info:
+                info_content += f"Příjemce: {self.header_info['Příjemce_kód']}\n"
+        except Exception as e:
+            # Skip if there's an error during display
+            print(f"Error displaying data: {e}")
+            return
         
         info_content += "\n=== INFORMACE O PARTNERECH ===\n"
         for key, value in self.partner_info.items():
@@ -296,13 +332,14 @@ class EDIDelforParser:
             self.delivery_tree.delete(item)
             
         for delivery in self.delivery_schedules:
+            scc_code = delivery.get('SCC', '')
+            scc_desc = self.get_scc_description(scc_code)
             self.delivery_tree.insert('', tk.END, values=(
                 delivery.get('Datum od', ''),
                 delivery.get('Datum do', ''),
                 delivery.get('Množství', ''),
-                delivery.get('Jednotka', ''),
                 delivery.get('Typ', ''),
-                delivery.get('SCC', '')
+                scc_desc
             ))
         
         # Statistiky
@@ -329,17 +366,84 @@ class EDIDelforParser:
         
         self.stats_text.insert(1.0, stats_content)
     
+    def get_week_number(self, date_str):
+        """Převede řetězec s datem na číslo kalendářního týdne (WW)"""
+        try:
+            day, month, year = map(int, date_str.split('.'))
+            dt = date(year, month, day)
+            return dt.isocalendar()[1]
+        except (ValueError, AttributeError):
+            return ""
+
+    def export_to_excel(self):
+        """Exportuje data o dodávkách do Excelu s kalendářními týdny"""
+        if not self.delivery_schedules:
+            messagebox.showwarning("Upozornění", "Žádná data k exportu")
+            return
+
+        try:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Dodávky"
+
+            # Hlavičky
+            headers = ["Týden", "Datum od", "Datum do", "Množství", "Typ", "SCC"]
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col_num, value=header)
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
+
+            # Data
+            row_num = 2
+            for delivery in self.delivery_schedules:
+                date_from = delivery.get('Datum od', '')
+                week_num = self.get_week_number(date_from) if date_from else ""
+                scc_code = delivery.get('SCC', '')
+                scc_desc = self.get_scc_description(scc_code)
+                
+                ws.cell(row=row_num, column=1, value=week_num)
+                ws.cell(row=row_num, column=2, value=date_from)
+                ws.cell(row=row_num, column=3, value=delivery.get('Datum do', ''))
+                ws.cell(row=row_num, column=4, value=delivery.get('Množství', ''))
+                ws.cell(row=row_num, column=5, value=delivery.get('Typ', ''))
+                ws.cell(row=row_num, column=6, value=scc_desc)
+                row_num += 1
+
+            # Automatické přizpůsobení šířky sloupců
+            for column in ws.columns:
+                max_length = 0
+                column_letter = get_column_letter(column[0].column)
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                ws.column_dimensions[column_letter].width = min(adjusted_width, 30)
+
+            # Uložení souboru
+            filename = f"dodavky_minebea_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+                initialfile=filename
+            )
+            
+            if filepath:
+                wb.save(filepath)
+                messagebox.showinfo("Hotovo", f"Data byla úspěšně exportována do souboru:\n{filepath}")
+
+        except Exception as e:
+            messagebox.showerror("Chyba", f"Chyba při exportu do Excelu: {str(e)}")
+
+    def on_closing(self):
+        """Handle window close event"""
+        self.root.destroy()  # Close the current window
+        
     def back_to_main(self):
-        """Closes the current window and returns to the main application"""
-        # Close current window
+        """Closes the current window"""
         self.root.destroy()
-        # Return to main window
-        if self.main_window:
-            self.main_window.root.deiconify()  # Show the main window if it exists
-        else:
-            # Create new main window instance
-            app = EDIUnifiedParser()
-            app.root.mainloop()
     
     def run(self):
         """Spustí aplikaci"""
